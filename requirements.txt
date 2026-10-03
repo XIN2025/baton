@@ -1,0 +1,4 @@
+fastapi>=0.142
+uvicorn[standard]>=0.54
+websockets>=17
+ollama>=0.6
