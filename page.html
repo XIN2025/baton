@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Baton session</title>
+<link rel="icon" href="data:,">
+<style>
+:root { --bg:#fff; --fg:#1d1d1f; --muted:#86868b; --soft:#f5f5f7; --border:#d2d2d7; --brand:#0071e3; --ok:#2aa24b; --bad:#b3151f; --violet:#8944ab; --radius:.75rem;
+  --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",system-ui,sans-serif; --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace; }
+@media (prefers-color-scheme: dark) { :root { --bg:#000; --fg:#f5f5f7; --muted:#98989d; --soft:#1c1c1e; --border:#38383a; --brand:#0a84ff; --ok:#30d158; --bad:#ff453a; --violet:#bf5af2; } }
+* { box-sizing:border-box; scrollbar-width:thin; }
+body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 var(--sans); -webkit-font-smoothing:antialiased; }
+header { position:sticky; top:0; z-index:1; background:color-mix(in oklab,var(--bg) 88%,transparent); backdrop-filter:blur(12px); border-bottom:1px solid var(--border); }
+.bar { max-width:880px; margin:0 auto; padding:12px 16px; display:flex; flex-wrap:wrap; gap:8px 16px; align-items:center; }
+h1 { font-size:17px; margin:0; font-weight:600; letter-spacing:-.01em; }
+.chip { font-size:13px; color:var(--muted); display:flex; gap:6px; align-items:center; min-width:0; }
+.dot { width:8px; height:8px; border-radius:50%; background:var(--muted); flex:none; }
+.dot.on { background:var(--ok); } .dot.drive { background:var(--brand); }
+main { max-width:880px; margin:0 auto; padding:8px 16px 180px; }
+.ev { display:grid; grid-template-columns:44px 1fr; gap:10px; padding:12px 0; border-bottom:1px solid var(--border); }
+.ev > div { min-width:0; }
+.seq { font:12px var(--mono); color:var(--muted); padding-top:2px; }
+.who { font-size:13px; color:var(--muted); } .who b { color:var(--fg); font-weight:600; }
+.tag { font-size:11px; padding:1px 7px; border-radius:999px; background:var(--soft); color:var(--muted); margin-left:6px; white-space:nowrap; }
+.text { margin-top:2px; overflow-wrap:anywhere; }
+.steer .text { color:var(--violet); font-weight:500; }
+.lease .text, .takeover .text { color:var(--brand); }
+.done .text { color:var(--ok); }
+.refused { color:var(--bad); }
+details { margin-top:6px; } summary { cursor:pointer; font-size:13px; color:var(--muted); }
+pre { margin:6px 0 0; padding:10px 12px; background:var(--soft); border-radius:calc(var(--radius)*.8); font:12px/1.45 var(--mono); overflow-x:auto; max-height:360px; }
+.add { color:var(--ok); } .del { color:var(--bad); }
+footer { position:fixed; left:0; right:0; bottom:0; background:color-mix(in oklab,var(--bg) 92%,transparent); backdrop-filter:blur(12px); border-top:1px solid var(--border); }
+.compose { max-width:880px; margin:0 auto; padding:12px 16px; display:flex; gap:8px; flex-wrap:wrap; }
+input { flex:1 1 220px; min-width:0; font:inherit; padding:10px 12px; border:1px solid var(--border); border-radius:var(--radius); background:var(--bg); color:var(--fg); }
+input:focus { outline:2px solid var(--brand); outline-offset:-1px; }
+button { font:inherit; font-weight:500; padding:10px 16px; border-radius:var(--radius); border:1px solid var(--border); background:var(--soft); color:var(--fg); cursor:pointer; }
+button.primary { background:var(--brand); border-color:var(--brand); color:#fff; }
+button:disabled { opacity:.45; cursor:default; }
+.note { max-width:880px; margin:0 auto; padding:0 16px 10px; font-size:12px; color:var(--muted); }
+.empty { color:var(--muted); padding:48px 0; text-align:center; }
+</style>
+</head>
+<body>
+<header><div class="bar">
+  <h1>Baton</h1>
+  <span class="chip"><span id="conn" class="dot"></span><span id="connText">connecting</span></span>
+  <span class="chip"><span class="dot drive"></span><span id="driver">nobody driving</span></span>
+  <span class="chip" id="people"></span>
+</div></header>
+<main id="log"><p class="empty" id="empty">Waiting for the session.</p></main>
+<footer>
+  <form class="compose" id="form">
+    <input id="steer" placeholder="Redirect the agent, e.g. use a sliding window" autocomplete="off">
+    <button class="primary" id="send">Send</button>
+    <button type="button" id="take">Take over</button>
+  </form>
+  <p class="note" id="note"></p>
+</footer>
+<script>
+const token = new URLSearchParams(location.search).get("token");
+const $ = id => document.getElementById(id);
+let ws, me = null, lastSeq = 0, backoff = 1000, lease = {};
+const outbox = new Map();
+
+function connect() {
+  if (!token) { $("connText").textContent = "add ?token=… to the link"; return; }
+  ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws?token=${encodeURIComponent(token)}`);
+  ws.onopen = () => { backoff = 1000; ws.send(JSON.stringify({op: "hello", since: lastSeq})); outbox.forEach(m => ws.send(JSON.stringify(m))); setConn(true); };
+  ws.onmessage = e => receive(JSON.parse(e.data));
+  ws.onclose = () => { setConn(false); setTimeout(connect, backoff); backoff = Math.min(backoff * 2, 15000); };
+}
+setInterval(() => ws && ws.readyState === 1 && ws.send('{"op":"ping"}'), 10000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden && ws && ws.readyState > 1) connect(); });
+
+function setConn(on) { $("conn").className = "dot" + (on ? " on" : ""); $("connText").textContent = on ? `connected${me ? " as " + me.name : ""}` : "reconnecting"; }
+
+function receive(m) {
+  if (m.op === "welcome") { me = m; setConn(true); const member = m.role === "member";
+    ["steer", "send", "take"].forEach(id => $(id).disabled = !member);
+    $("note").textContent = member ? "Take over hands the run to your own harness, which must be running with your token." : "You are a viewer: you can watch, not steer."; }
+  else if (m.op === "event" && m.seq > lastSeq) { lastSeq = m.seq; outbox.delete(m.id); render(m); }
+  else if (m.op === "lease") { lease = m; $("driver").textContent = m.holder ? `${m.holder} driving · epoch ${m.epoch}` : "nobody driving"; }
+  else if (m.op === "presence") $("people").textContent = m.names.join(", ") + " here";
+  else if (m.op === "nack") { outbox.delete(m.id); flash(m.reason); }
+  else if (m.op === "ack") outbox.delete(m.id);
+}
+
+function send(type, payload) {
+  const m = {op: "append", id: `page-${me.name}-${crypto.randomUUID().slice(0, 12)}`, type, payload};
+  outbox.set(m.id, m);
+  if (ws.readyState === 1) ws.send(JSON.stringify(m));
+}
+
+function flash(text) { $("note").innerHTML = `<span class="refused">${esc(text)}</span>`; }
+function esc(s) { return String(s ?? "").replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c])); }
+function diffHtml(b64) {
+  const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+  return new TextDecoder().decode(bytes).split("\n").map(l => `<span class="${l.startsWith("+") ? "add" : l.startsWith("-") ? "del" : ""}">${esc(l)}</span>`).join("\n");
+}
+function args(a) { const s = Object.entries(a || {}).map(([k, v]) => `${k}=${JSON.stringify(v)}`).join(", "); return s.length > 90 ? s.slice(0, 90) + "…" : s; }
+
+function render(e) {
+  $("empty")?.remove();
+  const p = e.payload, row = document.createElement("div");
+  row.className = `ev ${e.type}`;
+  let body;
+  switch (e.type) {
+    case "task": body = `set the task<div class="text">${esc(p.text)}</div>`; break;
+    case "steer": body = `redirected<div class="text">${esc(p.text)}</div>`; break;
+    case "takeover": body = `asked to take over<div class="text">on ${esc(p.model || "their own model")}</div>`; break;
+    case "lease": body = `<div class="text">${p.holder ? `${esc(p.holder)} is now driving (epoch ${e.epoch})` : `${esc(p.previous)} ${esc(p.reason)} the lease`}</div>`; break;
+    case "turn": body = `<span class="tag">${esc(p.model)}</span>${p.steers?.length ? `<span class="tag">read redirects ${p.steers.join(", ")}</span>` : ""}
+      <div class="text">${esc(p.text) || (p.tool_calls.length ? p.tool_calls.map(c => `${esc(c.name)}(${esc(args(c.args))})`).join("<br>") : "")}</div>`; break;
+    case "result": body = `<span class="tag">${esc(p.name)}</span><div class="text">${esc(args(p.args))}</div>
+      <details><summary>output</summary><pre>${esc(p.output)}</pre></details>
+      ${p.diff ? `<details open><summary>file change · fingerprint ${esc(p.fingerprint)}</summary><pre>${diffHtml(p.diff)}</pre></details>` : ""}`; break;
+    case "done": body = `<span class="tag">${esc(p.model)}</span><div class="text">finished: ${esc(p.text)}</div>`; break;
+    default: body = `<div class="text">${esc(JSON.stringify(p))}</div>`;
+  }
+  row.innerHTML = `<div class="seq">#${e.seq}</div><div><div class="who"><b>${esc(e.actor)}</b> ${e.type === "lease" ? "" : ""}</div>${body}</div>`;
+  const nearBottom = innerHeight + scrollY > document.body.scrollHeight - 200;
+  $("log").append(row);
+  if (nearBottom) scrollTo(0, document.body.scrollHeight);
+}
+
+$("form").onsubmit = ev => { ev.preventDefault(); const t = $("steer").value.trim(); if (t) { send("steer", {text: t}); $("steer").value = ""; } };
+$("take").onclick = () => send("takeover", {});
+connect();
+</script>
+</body>
+</html>
